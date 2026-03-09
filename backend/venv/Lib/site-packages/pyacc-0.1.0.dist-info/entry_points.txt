@@ -1,0 +1,3 @@
+[console_scripts]
+acc = pyacc.__main__:main
+
