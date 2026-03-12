@@ -3,34 +3,31 @@ import time
 from datetime import datetime
 import duckdb
 
-from pyaccsharedmemory import accSharedMemory
+from pyaccsharedmemory import accSharedMemory, SharedMemoryTimeout
 
 
 class TelemetryRecorder:
 
     def __init__(self):
         self.shm = accSharedMemory()
-        self.live_sample = None
         self.running = False
         self.thread = None
-
+        self.live_sample = None
         self.con = duckdb.connect("telemetry.db")
-
         self.current_lap = None
         self.lap_buffer = []
-
         self.session_id = None
         self.track = None
         self.car = None
-
-        # --- telemetry status info ---
         self.last_lap_time = None
         self.last_lap_number = None
         self.messages = []
+        self.waiting_for_acc = False
 
     # =====================
     # HELPERS
     # =====================
+
     def push_message(self, msg: str):
         timestamped = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
         self.messages.append(timestamped)
@@ -39,29 +36,24 @@ class TelemetryRecorder:
     def _safe_float(self, val, default=0.0):
         try:
             return float(val)
-        except Exception:
+        except:
             return default
 
     def _safe_int(self, val, default=0):
         try:
             return int(val)
-        except Exception:
+        except:
             return default
-
-    def _get_wheel_attr(self, wheel_obj, attr, default=0.0):
-        if wheel_obj is None:
-            return default
-        return self._safe_float(getattr(wheel_obj, attr, default))
 
     # =====================
     # PUBLIC API
     # =====================
+
     def start(self):
         if self.running:
             self.push_message("Telemetry already running")
             return
-
-        self.push_message("Connecting to ACC telemetry...")
+        self.push_message("Telemetry started — waiting for ACC...")
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -69,15 +61,12 @@ class TelemetryRecorder:
     def stop(self):
         if not self.running:
             return
-
-        self.push_message("Disconnecting telemetry...")
+        self.push_message("Telemetry stopped")
         self.running = False
-
         if self.thread:
             self.thread.join()
-
-        self.lap_buffer = []
         self.current_lap = None
+        self.lap_buffer = []
         self.session_id = None
         self.track = None
         self.car = None
@@ -85,16 +74,32 @@ class TelemetryRecorder:
     # =====================
     # MAIN LOOP
     # =====================
+
     def _loop(self):
         while self.running:
             try:
                 self.shm.read_shared_memory()
                 data = self.shm.get_shared_memory_data()
+            except SharedMemoryTimeout:
+                if not self.waiting_for_acc:
+                    self.push_message("Waiting for ACC telemetry...")
+                    self.waiting_for_acc = True
+                time.sleep(0.5)
+                continue
+            except Exception as e:
+                self.push_message(f"Telemetry read error: {repr(e)}")
+                time.sleep(1)
+                continue
 
-                if not data:
-                    time.sleep(0.1)
-                    continue
+            if not data:
+                time.sleep(0.1)
+                continue
 
+            if self.waiting_for_acc:
+                self.push_message("ACC telemetry detected")
+                self.waiting_for_acc = False
+
+            try:
                 lap_number = getattr(data.Graphics, "completed_lap", 0)
 
                 if self.session_id is None:
@@ -103,108 +108,56 @@ class TelemetryRecorder:
                 if self.current_lap is None:
                     self.current_lap = lap_number
 
-                # --- save completed lap ---
                 if lap_number != self.current_lap:
-                    self._save_lap(
-                        lap_number=self.current_lap,
-                        lap_time=self._safe_float(getattr(data.Graphics, "last_time", 0)) / 1000.0,
-                        is_valid=bool(getattr(data.Graphics, "is_valid_lap", True))
-                    )
+                    lap_time = self._safe_float(getattr(data.Graphics, "last_time", 0)) / 1000.0
+                    is_valid = bool(getattr(data.Graphics, "is_valid_lap", True))
+                    self._save_lap(self.current_lap, lap_time, is_valid)
                     self.lap_buffer = []
                     self.current_lap = lap_number
 
-                # --- safely extract coordinates ---
                 coords = getattr(data.Graphics, "car_coordinates", None)
+                pos_x = pos_y = pos_z = 0.0
                 if coords and len(coords) > 0:
                     pos = coords[0]
                     pos_x = self._safe_float(getattr(pos, "x", 0))
                     pos_y = self._safe_float(getattr(pos, "y", 0))
                     pos_z = self._safe_float(getattr(pos, "z", 0))
-                else:
-                    pos_x = pos_y = pos_z = 0.0
 
-                # --- g-forces ---
-                gforce_x = self._safe_float(getattr(data.Physics, "gForceLateral", 0))
-                gforce_y = self._safe_float(getattr(data.Physics, "gForceLongitudinal", 0))
-                gforce_z = self._safe_float(getattr(data.Physics, "gForceVertical", 0))
-
-                # --- fuel ---
-                fuel_in_tank = self._safe_float(getattr(data.Physics, "fuel", 0))
-                fuel_capacity = self._safe_float(getattr(data.Physics, "fuel_capacity", 0))
-                fuel_per_lap = self._safe_float(getattr(data.Physics, "fuel_per_lap", 0))
-
-                # --- tires and brakes (access wheels as objects) ---
-                tires = {}
-                brakes = {}
-                for wheel_name in ["FL", "FR", "RL", "RR"]:
-                    wheel = getattr(data.Physics, wheel_name, None)
-                    tires[wheel_name] = {
-                        "temp": self._get_wheel_attr(wheel, "tyre_temp"),
-                        "wear": self._get_wheel_attr(wheel, "tyre_wear"),
-                        "pressure": self._get_wheel_attr(wheel, "tyre_pressure")
-                    }
-                    brakes[wheel_name] = {
-                        "temp": self._get_wheel_attr(wheel, "brake_temp")
-                    }
-
-                # --- session / weather ---
-                weather = {
-                    "air_temp": self._safe_float(getattr(data.Graphics, "air_temperature", 0)),
-                    "track_temp": self._safe_float(getattr(data.Graphics, "track_temperature", 0)),
-                    "rain_density": self._safe_float(getattr(data.Graphics, "rain_density", 0)),
-                    "weather_type": getattr(data.Graphics, "weather", "Unknown")
-                }
-
-                # --- assemble sample ---
                 sample = {
                     "timestamp": time.time(),
-                    "car": self.car,
-                    "track": self.track,
-                    "session_time": self._safe_float(getattr(data.Graphics, "session_time", 0)),
-                    "current_lap": lap_number,
-                    "lap_distance": self._safe_float(getattr(data.Graphics, "lap_distance", 0)),
-                    "speed_kmh": self._safe_float(getattr(data.Physics, "speed_kmh", 0)),
-                    "gear": self._safe_int(getattr(data.Physics, "gear", 0)),
-                    "rpm": self._safe_int(getattr(data.Physics, "rpm", 0)),
+                    "speed": self._safe_float(getattr(data.Physics, "speed_kmh", 0)),
                     "throttle": self._safe_float(getattr(data.Physics, "gas", 0)),
                     "brake": self._safe_float(getattr(data.Physics, "brake", 0)),
                     "steering": self._safe_float(getattr(data.Physics, "steer_angle", 0)),
-                    "clutch": self._safe_float(getattr(data.Physics, "clutch", 0)),
+                    "gear": self._safe_int(getattr(data.Physics, "gear", 0)),
+                    "rpm": self._safe_int(getattr(data.Physics, "rpm", 0)),
+                    "pos_x": pos_x,
+                    "pos_y": pos_y,
+                    "pos_z": pos_z,
+                    "gforce_x": self._safe_float(getattr(data.Physics, "gForceLateral", 0)),
+                    "gforce_y": self._safe_float(getattr(data.Physics, "gForceLongitudinal", 0)),
+                    "gforce_z": self._safe_float(getattr(data.Physics, "gForceVertical", 0)),
                     "yaw": self._safe_float(getattr(data.Physics, "heading", 0)),
-                    "pitch": self._safe_float(getattr(data.Physics, "pitch", 0)),
-                    "roll": self._safe_float(getattr(data.Physics, "roll", 0)),
-                    "gforces": {"lat": gforce_x, "long": gforce_y, "vert": gforce_z},
-                    "fuel": {"tank": fuel_in_tank, "capacity": fuel_capacity, "per_lap": fuel_per_lap},
-                    "tires": tires,
-                    "brakes": brakes,
-                    "weather": weather,
-                    "position": {"x": pos_x, "y": pos_y, "z": pos_z}
                 }
 
                 self.live_sample = sample
                 self.lap_buffer.append(sample)
-
                 time.sleep(0.01)
-
             except Exception as e:
-                self.push_message(f"Telemetry error: {repr(e)}")
-                time.sleep(1)
+                self.push_message(f"Telemetry processing error: {repr(e)}")
+                time.sleep(0.2)
 
     # =====================
     # SESSION CREATION
     # =====================
+
     def _create_session(self, data):
         self.track = getattr(data.Static, "track", "").strip("\x00")
         self.car = getattr(data.Static, "car_model", "").strip("\x00")
-
         last_id = self.con.execute("SELECT MAX(id) FROM sessions").fetchone()[0]
         self.session_id = (last_id or 0) + 1
-
         self.con.execute(
-            """
-            INSERT INTO sessions (id, track, car, session_type, session_date)
-            VALUES (?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO sessions (id, track, car, session_type, session_date) VALUES (?, ?, ?, ?, ?)",
             (self.session_id, self.track, self.car, "manual", datetime.now())
         )
         self.con.commit()
@@ -213,84 +166,43 @@ class TelemetryRecorder:
     # =====================
     # SAVE LAP
     # =====================
+
     def _save_lap(self, lap_number, lap_time, is_valid):
-        if len(self.lap_buffer) < 100:
-            self.push_message(f"Skipped saving lap {lap_number}: insufficient data")
+        if len(self.lap_buffer) < 50:
+            self.push_message(f"Skipped lap {lap_number} (not enough samples)")
             return
 
         last_id = self.con.execute("SELECT MAX(id) FROM laps").fetchone()[0]
         lap_id = (last_id or 0) + 1
 
         self.con.execute(
-            """
-            INSERT INTO laps (id, session_id, lap_number, lap_time, is_valid)
-            VALUES (?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO laps (id, session_id, lap_number, lap_time, is_valid) VALUES (?, ?, ?, ?, ?)",
             (lap_id, self.session_id, lap_number, lap_time, is_valid)
         )
 
-        rows = []
-        for s in self.lap_buffer:
-            row = (
+        rows = [
+            (
                 lap_id,
                 s["timestamp"],
-                s["speed_kmh"],
+                s["speed"],
                 s["throttle"],
                 s["brake"],
                 s["steering"],
                 s["gear"],
                 s["rpm"],
-                s["clutch"],
+                s["pos_x"],
+                s["pos_y"],
+                s["pos_z"],
+                s["gforce_x"],
+                s["gforce_y"],
+                s["gforce_z"],
                 s["yaw"],
-                s["pitch"],
-                s["roll"],
-                s["position"]["x"],
-                s["position"]["y"],
-                s["position"]["z"],
-                s["gforces"]["lat"],
-                s["gforces"]["long"],
-                s["gforces"]["vert"],
-                s["fuel"]["tank"],
-                s["fuel"]["capacity"],
-                s["fuel"]["per_lap"],
-                s["tires"]["FL"]["temp"],
-                s["tires"]["FR"]["temp"],
-                s["tires"]["RL"]["temp"],
-                s["tires"]["RR"]["temp"],
-                s["tires"]["FL"]["wear"],
-                s["tires"]["FR"]["wear"],
-                s["tires"]["RL"]["wear"],
-                s["tires"]["RR"]["wear"],
-                s["tires"]["FL"]["pressure"],
-                s["tires"]["FR"]["pressure"],
-                s["tires"]["RL"]["pressure"],
-                s["tires"]["RR"]["pressure"],
-                s["brakes"]["FL"]["temp"],
-                s["brakes"]["FR"]["temp"],
-                s["brakes"]["RL"]["temp"],
-                s["brakes"]["RR"]["temp"],
-                s["weather"]["air_temp"],
-                s["weather"]["track_temp"],
-                s["weather"]["rain_density"],
-                s["weather"]["weather_type"]
             )
-            rows.append(row)
+            for s in self.lap_buffer
+        ]
 
         self.con.executemany(
-            """
-            INSERT INTO telemetry_samples
-            (lap_id, timestamp, speed, throttle, brake, steering, gear, rpm,
-             clutch, yaw, pitch, roll,
-             pos_x, pos_y, pos_z,
-             gforce_x, gforce_y, gforce_z,
-             fuel_tank, fuel_capacity, fuel_per_lap,
-             tyre_FL_temp, tyre_FR_temp, tyre_RL_temp, tyre_RR_temp,
-             tyre_FL_wear, tyre_FR_wear, tyre_RL_wear, tyre_RR_wear,
-             tyre_FL_pressure, tyre_FR_pressure, tyre_RL_pressure, tyre_RR_pressure,
-             brake_FL_temp, brake_FR_temp, brake_RL_temp, brake_RR_temp,
-             air_temp, track_temp, rain_density, weather_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            "INSERT INTO telemetry_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows
         )
 

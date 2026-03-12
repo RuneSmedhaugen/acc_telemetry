@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import TelemetryGraph from "../components/TelemetryGraph";
 import TrackMap from "../components/TrackMap";
 import LapComparisonPage from "./LapComparisonPage";
+import type { TelemetrySample } from "../types/telemetry";
 
 type Lap = {
   id: number;
@@ -10,23 +11,6 @@ type Lap = {
   is_valid: boolean;
   session_date: string;
   car: string;
-};
-
-type TelemetrySample = {
-  timestamp: number;
-  speed: number;
-  throttle: number;
-  brake: number;
-  steering: number;
-  gear: number;
-  pos_x: number;
-  pos_y: number;
-  pos_z: number;
-  yaw: number;
-  prm: number;
-  gforce_x: number;
-  gforce_y: number;
-  gforce_z: number;
 };
 
 type SavedTelemetriesPageProps = {
@@ -65,7 +49,7 @@ const SavedTelemetriesPage: React.FC<SavedTelemetriesPageProps> = ({ pushMessage
     };
 
     fetchTracks();
-  }, []);
+  }, [pushMessage]);
 
   const handleSelectTrack = async (track: string) => {
     setSelectedTrack(track);
