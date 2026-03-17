@@ -1,25 +1,39 @@
-import { apiFetch } from "./api";
+import type { TelemetrySample } from "../types/telemetry";
 
-export const fetchLapTelemetry = async (lapId: number) => {
+let ws: WebSocket | null = null;
 
-  const res = await apiFetch(
-    `http://127.0.0.1:8000/telemetry/${lapId}`
-  );
+export const connectTelemetry = (
+  onTelemetry: (data: TelemetrySample) => void,
+  onMessage: (msg: string) => void
+) => {
+  ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/live`);
 
-  if (!res.ok) throw new Error("Failed to fetch telemetry");
+  ws.onopen = () => {
+    onMessage("Telemetry connected");
+  };
 
-  const data = await res.json();
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
 
-  return data.samples || [];
+    if (data.telemetry) {
+      onTelemetry(data.telemetry as TelemetrySample);
+    }
+
+    if (data.message) {
+      onMessage(data.message as string);
+    }
+  };
+
+  ws.onerror = () => {
+    onMessage("Telemetry websocket error");
+  };
+
+  ws.onclose = () => {
+    onMessage("Telemetry disconnected");
+  };
 };
 
-export const fetchLiveTelemetry = async () => {
-
-  const res = await apiFetch(
-    "http://127.0.0.1:8000/telemetry/live"
-  );
-
-  if (!res.ok) throw new Error("Failed to fetch live telemetry");
-
-  return res.json();
+export const disconnectTelemetry = () => {
+  ws?.close();
+  ws = null;
 };

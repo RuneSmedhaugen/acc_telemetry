@@ -1,68 +1,82 @@
-import React, { useEffect, useState } from "react";
-import LapComparisonGraph from "../components/LapComparisonGraph";
-import type { TelemetrySample } from "../types/telemetry";
-import TrackMapComparison from "../components/TrackMapComparison"; // new component
+import React, { useState } from "react";
+import type { Lap } from "../types/lap";
+
+import LapList from "../components/LapList";
+import TrackMap from "../components/TrackMap";
+import TelemetryGraph from "../components/TelemetryGraph";
 
 type Props = {
-  lapIds: number[];
-  onClose: () => void;
+  pushMessage: (msg: string) => void;
 };
 
-type LapTelemetry = {
-  lapId: number;
-  samples: TelemetrySample[];
-};
+const LapComparisonPage: React.FC<Props> = ({ pushMessage }) => {
 
-const LapComparisonPage: React.FC<Props> = ({ lapIds, onClose }) => {
-  const [laps, setLaps] = useState<LapTelemetry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [laps, setLaps] = useState<Lap[]>([]);
+  const [selectedLapIds, setSelectedLapIds] = useState<string[]>([]);
 
-  useEffect(() => {
-    const fetchTelemetry = async () => {
-      try {
-        const results = await Promise.all(
-          lapIds.map(async (id) => {
-            const res = await fetch(`http://127.0.0.1:8000/telemetry/${id}`);
-            const data = await res.json();
+  const importLap = async () => {
 
-            return {
-              lapId: id,
-              samples: data.samples || [],
-            };
-          })
-        );
+    const json = prompt("Paste lap JSON");
 
-        setLaps(results);
-      } catch (err) {
-        console.error("Failed loading comparison data", err);
-      } finally {
-        setLoading(false);
-      }
-    };
+    if (!json) return;
 
-    fetchTelemetry();
-  }, [lapIds]);
+    try {
 
-  if (loading) return <p>Loading lap comparison...</p>;
+      const lap: Lap = JSON.parse(json);
+
+      setLaps((prev) => [...prev, lap]);
+
+      pushMessage("Lap imported");
+
+    } catch {
+
+      pushMessage("Invalid lap format");
+
+    }
+  };
+
+  const toggleLap = (id: string) => {
+
+    setSelectedLapIds((prev) =>
+      prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id]
+    );
+
+  };
+
+  const selectedLaps = laps.filter((l) => selectedLapIds.includes(l.id));
 
   return (
-    <div style={{ marginTop: 40 }}>
-      <h2>Lap Comparison</h2>
-      <button onClick={onClose} style={{ marginBottom: 20 }}>
-        Back
-      </button>
+    <div className="p-6 grid grid-cols-12 gap-4 h-[calc(100vh-120px)]">
 
-      {/* Graph comparison */}
-      <LapComparisonGraph laps={laps} />
+      <div className="col-span-3 flex flex-col gap-4">
 
-      {/* Track overlay comparison */}
-      <div style={{ marginTop: 30 }}>
-        <h3>Track Overlay</h3>
-        <div style={{ width: 600, height: 600 }}>
-          {/* Instead of multiple stacked TrackMaps, render a single comparison */}
-          <TrackMapComparison laps={laps.map(l => l.samples)} />
-        </div>
+        <button
+          onClick={importLap}
+          className="bg-blue-600 hover:bg-blue-700 p-2 rounded-md"
+        >
+          Import Lap
+        </button>
+
+        <LapList
+          laps={laps}
+          selected={selectedLapIds}
+          toggleLap={toggleLap}
+        />
+
       </div>
+
+      <div className="col-span-9 flex flex-col gap-4">
+
+        <TelemetryGraph laps={selectedLaps} />
+
+        <div className="flex-1">
+          <TrackMap laps={selectedLaps} />
+        </div>
+
+      </div>
+
     </div>
   );
 };
