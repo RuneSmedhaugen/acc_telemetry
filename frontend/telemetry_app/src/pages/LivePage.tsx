@@ -48,11 +48,43 @@ type TelemetrySample = {
   car: string;
 };
 
+const defaultTelemetry: TelemetrySample = {
+  timestamp: 0,
+  speed_kmh: 0,
+  throttle: 0,
+  brake: 0,
+  gear: 0,
+  display_gear: "N",
+  rpm: 0,
+  tires: {
+    FL: { temp: 0, pressure: 0, wear: 0 },
+    FR: { temp: 0, pressure: 0, wear: 0 },
+    RL: { temp: 0, pressure: 0, wear: 0 },
+    RR: { temp: 0, pressure: 0, wear: 0 },
+  },
+  brakes: {
+    FL: { temp: 0 },
+    FR: { temp: 0 },
+    RL: { temp: 0 },
+    RR: { temp: 0 },
+  },
+  fuel: { tank: 0, capacity: 0, per_lap: 0 },
+  gforces: { lat: 0, long: 0, vert: 0 },
+  position: { x: 0, y: 0, z: 0 },
+  session_time: 0,
+  current_lap: 0,
+  lap_distance: 0,
+  track: "-",
+  car: "-",
+};
+
 const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
   pushMessage,
 }) => {
   const [connected, setConnected] = useState(false);
-  const [telemetry, setTelemetry] = useState<TelemetrySample | null>(null);
+  const [telemetry, setTelemetry] = useState<TelemetrySample>(
+    defaultTelemetry
+  );
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -80,8 +112,8 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
         setTelemetry(data.telemetry);
       }
 
-      if (data.message) {
-        pushMessage(data.message);
+      if (data.messages) {
+        data.messages.forEach((msg: string) => pushMessage(msg));
       }
     };
 
@@ -109,111 +141,117 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
   };
 
   const fuelPercent =
-    telemetry && telemetry.fuel.capacity > 0
+    telemetry.fuel.capacity > 0
       ? (telemetry.fuel.tank / telemetry.fuel.capacity) * 100
       : 0;
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6 space-y-6">
-      {/* Connect Button */}
-      <button
-        onClick={toggleConnection}
-        className={`px-4 py-2 rounded-md font-semibold ${
-          connected
-            ? "bg-red-600 hover:bg-red-700"
-            : "bg-green-600 hover:bg-green-700"
-        }`}
-      >
-        {connected ? "Disconnect" : "Connect"}
-      </button>
+    <div className="w-full h-full bg-gray-900 text-white p-4 flex flex-col gap-4 overflow-hidden">
+      {/* Top Bar */}
+      <div className="flex flex-wrap items-center gap-4">
+        <button
+          onClick={toggleConnection}
+          className={`px-4 py-2 rounded-md font-semibold ${
+            connected
+              ? "bg-red-600 hover:bg-red-700"
+              : "bg-green-600 hover:bg-green-700"
+          }`}
+        >
+          {connected ? "Disconnect" : "Connect"}
+        </button>
 
-      {telemetry && (
-        <div className="grid grid-cols-12 gap-6">
-          {/* Throttle / Brake */}
-          <div className="col-span-1 flex gap-4">
-            <div className="flex flex-col items-center">
-              <span className="text-sm mb-2">Throttle</span>
-              <div className="h-64 w-6 bg-gray-800 rounded relative">
-                <div
-                  className="absolute bottom-0 w-full bg-green-500"
-                  style={{ height: `${telemetry.throttle * 100}%` }}
-                />
-              </div>
-            </div>
+        <div className="text-lg font-semibold">
+          {telemetry.speed_kmh.toFixed(0)} km/h
+        </div>
+        <div>Gear: {telemetry.display_gear}</div>
+        <div>RPM: {telemetry.rpm}</div>
+        <div>Lap: {telemetry.current_lap}</div>
+      </div>
 
-            <div className="flex flex-col items-center">
-              <span className="text-sm mb-2">Brake</span>
-              <div className="h-64 w-6 bg-gray-800 rounded relative">
-                <div
-                  className="absolute bottom-0 w-full bg-red-500"
-                  style={{ height: `${telemetry.brake * 100}%` }}
-                />
-              </div>
-            </div>
-          </div>
+      {/* Main Layout */}
+      <div className="flex flex-1 gap-4 min-h-0">
+        {/* Pedals */}
+        <div className="flex flex-col justify-center gap-4">
+          {["Throttle", "Brake"].map((label, i) => {
+            const value = i === 0 ? telemetry.throttle : telemetry.brake;
+            const color = i === 0 ? "bg-green-500" : "bg-red-500";
 
-          {/* Tires */}
-          <div className="col-span-6 grid grid-cols-2 gap-6">
-            {["FL", "FR", "RL", "RR"].map((wheel) => {
-              const tire = telemetry.tires[wheel];
-              return (
-                <div
-                  key={wheel}
-                  className="bg-gray-800 rounded-md p-3 text-sm space-y-1"
-                >
-                  <div className="font-semibold">{wheel}</div>
-                  <div className={tireTempColor(tire.temp)}>
-                    Temp: {tire.temp.toFixed(1)}°C
-                  </div>
-                  <div>Pressure: {tire.pressure.toFixed(1)} PSI</div>
-                  <div>Wear: {tire.wear.toFixed(1)}%</div>
+            return (
+              <div key={label} className="flex flex-col items-center">
+                <span className="text-xs mb-1">{label}</span>
+                <div className="h-40 w-5 bg-gray-800 rounded relative">
+                  <div
+                    className={`absolute bottom-0 w-full ${color}`}
+                    style={{ height: `${value * 100}%` }}
+                  />
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
+        </div>
 
-          {/* Brakes */}
-          <div className="col-span-2 bg-gray-800 rounded-md p-3 space-y-1">
-            <div className="font-semibold mb-2">Brakes</div>
-            {["FL", "FR", "RL", "RR"].map((wheel) => {
-              const brake = telemetry.brakes[wheel];
-              return (
-                <div key={wheel} className="text-sm">
-                  {wheel}: {brake.temp.toFixed(0)}°C
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Fuel */}
-          <div className="col-span-1 flex flex-col items-center">
-            <span className="text-sm mb-2">Fuel</span>
-
-            <div className="h-40 w-8 bg-gray-800 rounded relative">
+        {/* Tires (FIXED SIZE 🔥) */}
+        <div className="grid grid-cols-2 gap-3 place-content-center">
+          {["FL", "FR", "RL", "RR"].map((wheel) => {
+            const tire = telemetry.tires[wheel];
+            return (
               <div
-                className="absolute bottom-0 w-full bg-yellow-500"
-                style={{ height: `${fuelPercent}%` }}
-              />
-            </div>
+                key={wheel}
+                className="w-24 h-20 bg-gray-800 rounded-md p-2 text-xs flex flex-col justify-between"
+              >
+                <div className="font-semibold text-center">{wheel}</div>
+                <div className={`text-center ${tireTempColor(tire.temp)}`}>
+                  {tire.temp.toFixed(0)}°
+                </div>
+                <div className="text-center">
+                  {tire.pressure.toFixed(1)} PSI
+                </div>
+              </div>
+            );
+          })}
+        </div>
 
-            <div className="text-xs mt-2 text-center">
-              {telemetry.fuel.tank.toFixed(1)} L
-            </div>
+        {/* Brakes */}
+        <div className="flex flex-col justify-center gap-2 text-xs">
+          <div className="font-semibold text-sm mb-1">Brakes</div>
+          {["FL", "FR", "RL", "RR"].map((wheel) => {
+            const brake = telemetry.brakes[wheel];
+            return (
+              <div key={wheel}>
+                {wheel}: {brake.temp.toFixed(0)}°
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Fuel */}
+        <div className="flex flex-col items-center justify-center">
+          <span className="text-xs mb-2">Fuel</span>
+          <div className="h-32 w-6 bg-gray-800 rounded relative">
+            <div
+              className="absolute bottom-0 w-full bg-yellow-500"
+              style={{ height: `${fuelPercent}%` }}
+            />
           </div>
+          <div className="text-xs mt-1">
+            {telemetry.fuel.tank.toFixed(1)}L
+          </div>
+        </div>
 
-          {/* Car Info */}
-          <div className="col-span-2 bg-gray-800 rounded-md p-3 space-y-1">
-            <div className="text-lg font-semibold">
-              {telemetry.speed_kmh.toFixed(0)} km/h
-            </div>
-            <div>Gear: {telemetry.display_gear}</div>
-            <div>RPM: {telemetry.rpm}</div>
-            <div>Lap: {telemetry.current_lap}</div>
+        {/* Info Panel */}
+        <div className="flex-1 bg-gray-800 rounded-md p-3 text-sm flex flex-col justify-between">
+          <div>
+            <div className="font-semibold mb-2">Session</div>
             <div>Track: {telemetry.track}</div>
             <div>Car: {telemetry.car}</div>
           </div>
+
+          <div>
+            <div className="font-semibold mt-2">Lap Info</div>
+            <div>Lap Distance: {telemetry.lap_distance.toFixed(0)} m</div>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };
