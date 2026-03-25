@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { startTelemetry, stopTelemetry } from "../services/sessionService";
 
 type Tire = {
   temp: number;
@@ -88,43 +89,57 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  const toggleConnection = () => {
+  const toggleConnection = async () => {
+    // 🔴 DISCONNECT
     if (connected) {
       wsRef.current?.close();
       wsRef.current = null;
+
+      await stopTelemetry(); // 🔥 IMPORTANT
+
       setConnected(false);
       pushMessage("Telemetry disconnected");
       return;
     }
 
-    const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/live`);
-    wsRef.current = ws;
+    try {
+      // 🟢 START TELEMETRY FIRST
+      await startTelemetry();
+      pushMessage("Telemetry started");
 
-    ws.onopen = () => {
-      setConnected(true);
-      pushMessage("Telemetry connected");
-    };
+      // 🟢 THEN CONNECT WS
+      const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws/live`);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+      ws.onopen = () => {
+        setConnected(true);
+        pushMessage("Telemetry connected");
+      };
 
-      if (data.telemetry) {
-        setTelemetry(data.telemetry);
-      }
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
 
-      if (data.messages) {
-        data.messages.forEach((msg: string) => pushMessage(msg));
-      }
-    };
+        if (data.telemetry) {
+          setTelemetry(data.telemetry);
+        }
 
-    ws.onerror = () => {
-      pushMessage("Telemetry websocket error");
-    };
+        if (data.messages) {
+          data.messages.forEach((msg: string) => pushMessage(msg));
+        }
+      };
 
-    ws.onclose = () => {
-      setConnected(false);
-      pushMessage("Telemetry disconnected");
-    };
+      ws.onerror = () => {
+        pushMessage("Telemetry websocket error");
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        pushMessage("Telemetry disconnected");
+      };
+    } catch (err) {
+      pushMessage("Failed to start telemetry");
+      console.error(err);
+    }
   };
 
   useEffect(() => {
@@ -147,7 +162,6 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
 
   return (
     <div className="w-full h-full bg-gray-900 text-white p-4 flex flex-col gap-4 overflow-hidden">
-      {/* Top Bar */}
       <div className="flex flex-wrap items-center gap-4">
         <button
           onClick={toggleConnection}
@@ -168,9 +182,7 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
         <div>Lap: {telemetry.current_lap}</div>
       </div>
 
-      {/* Main Layout */}
       <div className="flex flex-1 gap-4 min-h-0">
-        {/* Pedals */}
         <div className="flex flex-col justify-center gap-4">
           {["Throttle", "Brake"].map((label, i) => {
             const value = i === 0 ? telemetry.throttle : telemetry.brake;
@@ -190,7 +202,6 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
           })}
         </div>
 
-        {/* Tires (FIXED SIZE 🔥) */}
         <div className="grid grid-cols-2 gap-3 place-content-center">
           {["FL", "FR", "RL", "RR"].map((wheel) => {
             const tire = telemetry.tires[wheel];
@@ -211,7 +222,6 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
           })}
         </div>
 
-        {/* Brakes */}
         <div className="flex flex-col justify-center gap-2 text-xs">
           <div className="font-semibold text-sm mb-1">Brakes</div>
           {["FL", "FR", "RL", "RR"].map((wheel) => {
@@ -224,7 +234,6 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
           })}
         </div>
 
-        {/* Fuel */}
         <div className="flex flex-col items-center justify-center">
           <span className="text-xs mb-2">Fuel</span>
           <div className="h-32 w-6 bg-gray-800 rounded relative">
@@ -238,7 +247,6 @@ const LivePage: React.FC<{ pushMessage: (msg: string) => void }> = ({
           </div>
         </div>
 
-        {/* Info Panel */}
         <div className="flex-1 bg-gray-800 rounded-md p-3 text-sm flex flex-col justify-between">
           <div>
             <div className="font-semibold mb-2">Session</div>

@@ -19,8 +19,8 @@ export const connectTelemetry = (
       onTelemetry(data.telemetry as TelemetrySample);
     }
 
-    if (data.message) {
-      onMessage(data.message as string);
+    if (data.messages) {
+      data.messages.forEach((msg: string) => onMessage(msg));
     }
   };
 

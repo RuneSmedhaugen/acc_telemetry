@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 # =============================
 # TELEMETRY RECORDER
 # =============================
-recorder = TelemetryRecorder()
+recorder = TelemetryRecorder(DB_PATH)
 
 # =============================
 # API KEY UTILITIES
@@ -208,22 +208,37 @@ def telemetry_status(request: Request):
 @app.websocket("/ws/live")
 async def live_ws(ws: WebSocket):
     await ws.accept()
+
+    # optional safety net
+    if not recorder.running:
+        recorder.start()
+
     last_index = 0
+
     try:
         while True:
             payload = {}
-            # latest sample
+
             if recorder.live_sample:
                 payload["telemetry"] = recorder.live_sample
-            # new messages
+
             if last_index < len(recorder.messages):
                 payload["messages"] = recorder.messages[last_index:]
                 last_index = len(recorder.messages)
+
             if payload:
                 await ws.send_json(payload)
+
             await asyncio.sleep(0.02)
-    except Exception:
-        await ws.close()
+
+    except WebSocketDisconnect:
+        print("Client disconnected cleanly")
+
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+
+    finally:
+        print("WebSocket connection closed")
 
 # =============================
 # RESET DATABASE
